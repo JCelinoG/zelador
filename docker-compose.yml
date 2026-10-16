@@ -1,1 +1,34 @@
-.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zelador-postgres
+    environment:
+      POSTGRES_DB: zelador
+      POSTGRES_USER: zelador
+      POSTGRES_PASSWORD: zelador
+    ports:
+      - "5432:5432"
+    volumes:
+      - zelador_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zelador -d zelador"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: zelador-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - zelador_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  zelador_pg:
+  zelador_redis:
