@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,15 +28,18 @@ public class DeliveryWorker {
     private final DeliveryRepository deliveryRepository;
     private final AttemptRepository attemptRepository;
     private final HttpDeliveryClient httpClient;
+    private final BackoffPolicy backoffPolicy;
 
     public DeliveryWorker(StringRedisTemplate redis,
                           DeliveryRepository deliveryRepository,
                           AttemptRepository attemptRepository,
-                          HttpDeliveryClient httpClient) {
+                          HttpDeliveryClient httpClient,
+                        BackoffPolicy backoffPolicy) {
         this.redis = redis;
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
         this.httpClient = httpClient;
+        this.backoffPolicy = backoffPolicy;
     }
 
     @PostConstruct
@@ -74,8 +78,65 @@ public class DeliveryWorker {
         }
     }
 
-    private void processar(MapRecord<String, Object, Object> record) {
-        UUID deliveryId = UUID.fromString((String) record.getValue().get("deliveryId"));
+private void processar(MapRecord<String, Object, Object> record) {
+    UUID deliveryId = UUID.fromString((String) record.getValue().get("deliveryId"));
+
+    Delivery delivery = deliveryRepository.findById(deliveryId).orElse(null);
+    if (delivery == null) {
+        log.warn("Delivery não encontrada: {}", deliveryId);
+        ack(record);
+        return;
+    }
+
+    delivery.marcarEmProcessamento();
+    deliveryRepository.save(delivery);
+
+    long inicio = System.currentTimeMillis();
+    try {
+        int statusCode = httpClient.entregar(delivery);
+        int latencia = (int) (System.currentTimeMillis() - inicio);
+
+        delivery.incrementarTentativa();
+
+        if (statusCode >= 200 && statusCode < 300) {
+            delivery.marcarEntregue();
+            attemptRepository.save(Attempt.sucesso(delivery.getId(), delivery.getAttemptsCount(), statusCode, latencia));
+            log.info("Delivery {} entregue com {}", deliveryId, statusCode);
+        } else {
+            agendarRetry(delivery, statusCode, "HTTP " + statusCode, latencia);
+            log.warn("Delivery {} falhou com {} — retry agendado", deliveryId, statusCode);
+        }
+    } catch (Exception e) {
+        int latencia = (int) (System.currentTimeMillis() - inicio);
+        delivery.incrementarTentativa();
+        agendarRetry(delivery, null, e.getMessage(), latencia);
+        log.error("Erro ao entregar {} — retry agendado", deliveryId, e);
+    }
+
+    deliveryRepository.save(delivery);
+    ack(record);
+}
+
+private void agendarRetry(Delivery delivery, Integer statusCode, String erro, int latencia) {
+    attemptRepository.save(Attempt.falha(
+            delivery.getId(),
+            delivery.getAttemptsCount(),
+            statusCode,
+            erro,
+            latencia
+    ));
+
+    // Ainda tem tentativa? Agenda retry. Esgotou? Vai pra DLQ.
+    // (max_attempts vem do webhook; por enquanto hardcoded em 5)
+    int maxAttempts = 5;
+    if (delivery.getAttemptsCount() >= maxAttempts) {
+        delivery.marcarDeadLetter();
+        log.warn("Delivery {} esgotou tentativas — movida pra DEAD_LETTER", delivery.getId());
+    } else {
+        Instant proxima = backoffPolicy.proximaTentativa(delivery.getAttemptsCount());
+        delivery.marcarAguardandoRetry(proxima);
+    }
+}        UUID deliveryId = UUID.fromString((String) record.getValue().get("deliveryId"));
 
         Delivery delivery = deliveryRepository.findById(deliveryId).orElse(null);
         if (delivery == null) {
