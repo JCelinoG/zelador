@@ -83,6 +83,13 @@ public class Delivery {
         this.updatedAt = Instant.now();
     }
 
+    public void reiniciarParaReplay() {
+    this.status = DeliveryStatus.PENDENTE;
+    this.attemptsCount = 0;
+    this.nextAttemptAt = null;
+    this.updatedAt = Instant.now();
+}
+
     public UUID getId() { return id; }
     public UUID getTenantId() { return tenantId; }
     public UUID getWebhookId() { return webhookId; }

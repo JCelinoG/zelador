@@ -1,9 +1,12 @@
 package br.com.zelador.worker;
 
 import br.com.zelador.domain.Attempt;
+import br.com.zelador.domain.DeadLetter;
 import br.com.zelador.domain.Delivery;
 import br.com.zelador.infra.repository.AttemptRepository;
+import br.com.zelador.infra.repository.DeadLetterRepository;
 import br.com.zelador.infra.repository.DeliveryRepository;
+import br.com.zelador.observability.ZeladorMetrics;
 import br.com.zelador.queue.DeliveryPublisher;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -32,19 +35,25 @@ public class DeliveryWorker {
     private final StringRedisTemplate redis;
     private final DeliveryRepository deliveryRepository;
     private final AttemptRepository attemptRepository;
+    private final DeadLetterRepository deadLetterRepository;
     private final HttpDeliveryClient httpClient;
     private final BackoffPolicy backoffPolicy;
+    private final ZeladorMetrics metrics;
 
     public DeliveryWorker(StringRedisTemplate redis,
                           DeliveryRepository deliveryRepository,
                           AttemptRepository attemptRepository,
+                          DeadLetterRepository deadLetterRepository,
                           HttpDeliveryClient httpClient,
-                          BackoffPolicy backoffPolicy) {
+                          BackoffPolicy backoffPolicy,
+                          ZeladorMetrics metrics) {
         this.redis = redis;
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
+        this.deadLetterRepository = deadLetterRepository;
         this.httpClient = httpClient;
         this.backoffPolicy = backoffPolicy;
+        this.metrics = metrics;
     }
 
     @PostConstruct
@@ -100,7 +109,7 @@ public class DeliveryWorker {
         long inicio = System.currentTimeMillis();
         try {
             int statusCode = httpClient.entregar(delivery);
-            int latencia = (int) (System.currentTimeMillis() - inicio);
+            Duration latencia = Duration.ofMillis(System.currentTimeMillis() - inicio);
 
             delivery.incrementarTentativa();
 
@@ -110,15 +119,16 @@ public class DeliveryWorker {
                         delivery.getId(),
                         delivery.getAttemptsCount(),
                         statusCode,
-                        latencia
+                        (int) latencia.toMillis()
                 ));
+                metrics.registrarSucesso(latencia);
                 log.info("Delivery {} entregue com {}", deliveryId, statusCode);
             } else {
                 agendarRetry(delivery, statusCode, "HTTP " + statusCode, latencia);
                 log.warn("Delivery {} falhou com {} — retry agendado", deliveryId, statusCode);
             }
         } catch (Exception e) {
-            int latencia = (int) (System.currentTimeMillis() - inicio);
+            Duration latencia = Duration.ofMillis(System.currentTimeMillis() - inicio);
             delivery.incrementarTentativa();
             agendarRetry(delivery, null, e.getMessage(), latencia);
             log.error("Erro ao entregar {} — retry agendado", deliveryId, e);
@@ -128,21 +138,27 @@ public class DeliveryWorker {
         ack(record);
     }
 
-    private void agendarRetry(Delivery delivery, Integer statusCode, String erro, int latencia) {
+    private void agendarRetry(Delivery delivery, Integer statusCode, String erro, Duration latencia) {
         attemptRepository.save(Attempt.falha(
                 delivery.getId(),
                 delivery.getAttemptsCount(),
                 statusCode,
                 erro,
-                latencia
+                (int) latencia.toMillis()
         ));
 
         if (delivery.getAttemptsCount() >= MAX_ATTEMPTS) {
             delivery.marcarDeadLetter();
+            deadLetterRepository.save(DeadLetter.para(
+                    delivery.getId(),
+                    "Esgotou " + MAX_ATTEMPTS + " tentativas. Último erro: " + erro
+            ));
+            metrics.registrarDeadLetter(latencia);
             log.warn("Delivery {} esgotou tentativas — movida pra DEAD_LETTER", delivery.getId());
         } else {
             Instant proxima = backoffPolicy.proximaTentativa(delivery.getAttemptsCount());
             delivery.marcarAguardandoRetry(proxima);
+            metrics.registrarRetry(latencia);
         }
     }
 

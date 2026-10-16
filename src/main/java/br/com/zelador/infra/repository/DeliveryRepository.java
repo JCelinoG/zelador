@@ -14,7 +14,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface DeliveryRepository extends JpaRepository<Delivery, UUID> {
-
+long countByStatus(DeliveryStatus status);
     Optional<Delivery> findByWebhookIdAndIdempotencyKey(UUID webhookId, String idempotencyKey);
 
     @Query("""
