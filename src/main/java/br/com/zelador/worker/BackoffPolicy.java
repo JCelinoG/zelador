@@ -17,7 +17,7 @@ public class BackoffPolicy {
      *
      * formula: min(CAP, BASE * 2^attempt) * random(0.5, 1.5)
      *
-     * O jitter evita que várias entregas que falharam ao mesmo tempo
+     * O jitter evitaa que várias entregas que falharam ao mesmo tempo
      * voltem a tentar no mesmo instante (thundering herd).
      */
     public Instant proximaTentativa(int attemptAtual) {
