@@ -8,7 +8,11 @@ import br.com.zelador.queue.DeliveryPublisher;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.connection.stream.*;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +27,7 @@ public class DeliveryWorker {
     private static final Logger log = LoggerFactory.getLogger(DeliveryWorker.class);
     private static final String GROUP = "zelador-workers";
     private static final String CONSUMER = "worker-" + UUID.randomUUID();
+    private static final int MAX_ATTEMPTS = 5;
 
     private final StringRedisTemplate redis;
     private final DeliveryRepository deliveryRepository;
@@ -34,7 +39,7 @@ public class DeliveryWorker {
                           DeliveryRepository deliveryRepository,
                           AttemptRepository attemptRepository,
                           HttpDeliveryClient httpClient,
-                        BackoffPolicy backoffPolicy) {
+                          BackoffPolicy backoffPolicy) {
         this.redis = redis;
         this.deliveryRepository = deliveryRepository;
         this.attemptRepository = attemptRepository;
@@ -58,6 +63,7 @@ public class DeliveryWorker {
         }
     }
 
+    @SuppressWarnings("unchecked")
     private void loop() {
         while (!Thread.currentThread().isInterrupted()) {
             try {
@@ -78,65 +84,8 @@ public class DeliveryWorker {
         }
     }
 
-private void processar(MapRecord<String, Object, Object> record) {
-    UUID deliveryId = UUID.fromString((String) record.getValue().get("deliveryId"));
-
-    Delivery delivery = deliveryRepository.findById(deliveryId).orElse(null);
-    if (delivery == null) {
-        log.warn("Delivery não encontrada: {}", deliveryId);
-        ack(record);
-        return;
-    }
-
-    delivery.marcarEmProcessamento();
-    deliveryRepository.save(delivery);
-
-    long inicio = System.currentTimeMillis();
-    try {
-        int statusCode = httpClient.entregar(delivery);
-        int latencia = (int) (System.currentTimeMillis() - inicio);
-
-        delivery.incrementarTentativa();
-
-        if (statusCode >= 200 && statusCode < 300) {
-            delivery.marcarEntregue();
-            attemptRepository.save(Attempt.sucesso(delivery.getId(), delivery.getAttemptsCount(), statusCode, latencia));
-            log.info("Delivery {} entregue com {}", deliveryId, statusCode);
-        } else {
-            agendarRetry(delivery, statusCode, "HTTP " + statusCode, latencia);
-            log.warn("Delivery {} falhou com {} — retry agendado", deliveryId, statusCode);
-        }
-    } catch (Exception e) {
-        int latencia = (int) (System.currentTimeMillis() - inicio);
-        delivery.incrementarTentativa();
-        agendarRetry(delivery, null, e.getMessage(), latencia);
-        log.error("Erro ao entregar {} — retry agendado", deliveryId, e);
-    }
-
-    deliveryRepository.save(delivery);
-    ack(record);
-}
-
-private void agendarRetry(Delivery delivery, Integer statusCode, String erro, int latencia) {
-    attemptRepository.save(Attempt.falha(
-            delivery.getId(),
-            delivery.getAttemptsCount(),
-            statusCode,
-            erro,
-            latencia
-    ));
-
-    // Ainda tem tentativa? Agenda retry. Esgotou? Vai pra DLQ.
-    // (max_attempts vem do webhook; por enquanto hardcoded em 5)
-    int maxAttempts = 5;
-    if (delivery.getAttemptsCount() >= maxAttempts) {
-        delivery.marcarDeadLetter();
-        log.warn("Delivery {} esgotou tentativas — movida pra DEAD_LETTER", delivery.getId());
-    } else {
-        Instant proxima = backoffPolicy.proximaTentativa(delivery.getAttemptsCount());
-        delivery.marcarAguardandoRetry(proxima);
-    }
-}        UUID deliveryId = UUID.fromString((String) record.getValue().get("deliveryId"));
+    private void processar(MapRecord<String, Object, Object> record) {
+        UUID deliveryId = UUID.fromString((String) record.getValue().get("deliveryId"));
 
         Delivery delivery = deliveryRepository.findById(deliveryId).orElse(null);
         if (delivery == null) {
@@ -153,25 +102,48 @@ private void agendarRetry(Delivery delivery, Integer statusCode, String erro, in
             int statusCode = httpClient.entregar(delivery);
             int latencia = (int) (System.currentTimeMillis() - inicio);
 
+            delivery.incrementarTentativa();
+
             if (statusCode >= 200 && statusCode < 300) {
                 delivery.marcarEntregue();
-                delivery.incrementarTentativa();
-                attemptRepository.save(Attempt.sucesso(delivery.getId(), delivery.getAttemptsCount(), statusCode, latencia));
+                attemptRepository.save(Attempt.sucesso(
+                        delivery.getId(),
+                        delivery.getAttemptsCount(),
+                        statusCode,
+                        latencia
+                ));
                 log.info("Delivery {} entregue com {}", deliveryId, statusCode);
             } else {
-                delivery.incrementarTentativa();
-                attemptRepository.save(Attempt.falha(delivery.getId(), delivery.getAttemptsCount(), statusCode, "HTTP " + statusCode, latencia));
-                log.warn("Delivery {} falhou com {}", deliveryId, statusCode);
+                agendarRetry(delivery, statusCode, "HTTP " + statusCode, latencia);
+                log.warn("Delivery {} falhou com {} — retry agendado", deliveryId, statusCode);
             }
         } catch (Exception e) {
             int latencia = (int) (System.currentTimeMillis() - inicio);
             delivery.incrementarTentativa();
-            attemptRepository.save(Attempt.falha(delivery.getId(), delivery.getAttemptsCount(), null, e.getMessage(), latencia));
-            log.error("Erro ao entregar {}", deliveryId, e);
+            agendarRetry(delivery, null, e.getMessage(), latencia);
+            log.error("Erro ao entregar {} — retry agendado", deliveryId, e);
         }
 
         deliveryRepository.save(delivery);
         ack(record);
+    }
+
+    private void agendarRetry(Delivery delivery, Integer statusCode, String erro, int latencia) {
+        attemptRepository.save(Attempt.falha(
+                delivery.getId(),
+                delivery.getAttemptsCount(),
+                statusCode,
+                erro,
+                latencia
+        ));
+
+        if (delivery.getAttemptsCount() >= MAX_ATTEMPTS) {
+            delivery.marcarDeadLetter();
+            log.warn("Delivery {} esgotou tentativas — movida pra DEAD_LETTER", delivery.getId());
+        } else {
+            Instant proxima = backoffPolicy.proximaTentativa(delivery.getAttemptsCount());
+            delivery.marcarAguardandoRetry(proxima);
+        }
     }
 
     private void ack(MapRecord<String, Object, Object> record) {
