@@ -72,6 +72,17 @@ public class Delivery {
         this.updatedAt = Instant.now();
     }
 
+    public void marcarAguardandoRetry(Instant nextAttemptAt) {
+    this.status = DeliveryStatus.AGUARDANDO_RETRY;
+    this.nextAttemptAt = nextAttemptAt;
+    this.updatedAt = Instant.now();
+    }
+
+    public void marcarDeadLetter() {
+        this.status = DeliveryStatus.DEAD_LETTER;
+        this.updatedAt = Instant.now();
+    }
+
     public UUID getId() { return id; }
     public UUID getTenantId() { return tenantId; }
     public UUID getWebhookId() { return webhookId; }
