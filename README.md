@@ -11,6 +11,18 @@ Entregar webhook de nota fiscal não é `POST` e esquecer — é garantir
 que a notificação chegue, sem duplicar, mesmo quando o outro lado
 não coopera.
 
+## Visão geral
+
+![Fluxo principal](docs/flux/v1.svg)
+
+## Como uma entrega funciona
+
+![Sequência de uma entrega](docs/flux/v3.svg)
+
+## Ciclo de vida de uma entrega
+
+![Estados da delivery](docs/flux/v2.svg)
+
 ## O que o Zelador faz
 
 - Recebe eventos de nota fiscal e enfileira entregas por tenant.
@@ -29,6 +41,15 @@ não coopera.
 - **Retry Scheduler** — backoff exponencial com jitter.
 - **Dead Letter** — entregas falhas persistentes, com replay.
 - **Dashboard** — Next.js + TypeScript para métricas e replay.
+
+## Modelo de domínio
+
+- **Tenant** — o SaaS que usa o Zelador. Isolamento desde o dia 1.
+- **Webhook** — configuração de destino: URL, secret, tentativas máximas.
+- **Delivery** — uma entrega específica (ex.: "nota 123 pro webhook X").
+  Criada uma única vez por chave de idempotência.
+- **Attempt** — cada tentativa de entrega: status, latência, resposta.
+- **DeadLetter** — deliveries que esgotaram tentativas, aguardando replay.
 
 ## Stack
 
