@@ -31,16 +31,17 @@ não coopera.
 - Tenta de novo com backoff exponencial e jitter.
 - Isola falhas por tenant (um cliente problemático não derruba os outros).
 - Move entregas que esgotaram tentativas para uma dead-letter queue.
-- Permite replay manual de dead-letters via dashboard.
+- Permite replay manual de dead-letters.
 
 ## Arquitetura
 
 - **API de Ingestão** — Spring Boot, recebe webhooks, valida, cria Delivery.
 - **Fila** — Redis Streams com consumer groups.
 - **Worker Pool** — consumidores Java que executam as entregas HTTP.
-- **Retry Scheduler** — backoff exponencial com jitter.
-- **Dead Letter** — entregas falhas persistentes, com replay.
-- **Dashboard** — Next.js + TypeScript para métricas e replay.
+- **Retry Scheduler** — varre deliveries em `AGUARDANDO_RETRY` a cada 5s
+  e republica na fila quando o backoff expira.
+- **Dead Letter** — entregas falhas persistentes, com replay manual.
+- **Observabilidade** — Micrometer + Prometheus + Grafana.
 
 ## Modelo de domínio
 
@@ -55,11 +56,26 @@ não coopera.
 
 - Java 21 + Spring Boot 3
 - Redis Streams
-- PostgreSQL
+- PostgreSQL 16
 - Docker Compose
-- Next.js + TypeScript (dashboard)
+- Micrometer + Prometheus + Grafana
+- Next.js + TypeScript (dashboard — em desenvolvimento)
+
+## API
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| POST   | `/webhooks/{webhookId}/nota` | Recebe evento de nota fiscal. Header `Idempotency-Key` obrigatório. |
+| GET    | `/deliveries/{id}`           | Consulta delivery com histórico de tentativas. |
+| POST   | `/deliveries/{id}/replay`    | Reprocessa uma delivery que está na dead-letter queue. |
+| GET    | `/actuator/health`           | Health check. |
+| GET    | `/actuator/prometheus`       | Métricas Prometheus. |
 
 ## Como rodar
 
 ```bash
-docker compose up
+# Sobe infraestrutura (Postgres, Redis, Prometheus, Grafana)
+docker compose up -d
+
+# Roda a aplicação
+./mvnw spring-boot:run
