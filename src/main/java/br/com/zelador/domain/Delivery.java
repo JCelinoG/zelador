@@ -90,12 +90,13 @@ public class Delivery {
     this.updatedAt = Instant.now();
 }
 
-    public UUID getId() { return id; }
-    public UUID getTenantId() { return tenantId; }
-    public UUID getWebhookId() { return webhookId; }
-    public String getIdempotencyKey() { return idempotencyKey; }
-    public String getPayload() { return payload; }
-    public DeliveryStatus getStatus() { return status; }
-    public int getAttemptsCount() { return attemptsCount; }
-    public Instant getNextAttemptAt() { return nextAttemptAt; }
+public UUID getId() { return id; }
+public UUID getTenantId() { return tenantId; }
+public UUID getWebhookId() { return webhookId; }
+public String getIdempotencyKey() { return idempotencyKey; }
+public String getPayload() { return payload; }
+public DeliveryStatus getStatus() { return status; }
+public int getAttemptsCount() { return attemptsCount; }
+public Instant getNextAttemptAt() { return nextAttemptAt; }
+public Instant getCreatedAt() { return createdAt; }
 }
