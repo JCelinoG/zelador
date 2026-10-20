@@ -1,25 +1,30 @@
 'use client';
 
-import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState, use } from 'react';
 import type { DeliveryDetail } from '@/lib/api';
 import { detalheDelivery, replayDelivery } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 
-export default function DeliveryDetailPage() {
-  const params = useParams<{ id: string }>();
+export default function DeliveryDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   const router = useRouter();
+  const { id } = use(params);
+
   const [data, setData] = useState<DeliveryDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [replaying, setReplaying] = useState(false);
 
   useEffect(() => {
-    if (!params.id) return;
-    detalheDelivery(params.id)
+    if (!id) return;
+    detalheDelivery(id)
       .then(setData)
       .catch((e) => setError(e.message));
-  }, [params.id]);
-
+  }, [id]);
+  
   const handleReplay = async () => {
     if (!data) return;
     setReplaying(true);
@@ -84,8 +89,8 @@ export default function DeliveryDetailPage() {
 
       <section className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
         <InfoCard label="Tentativas" value={String(data.attemptsCount)} />
-        <InfoCard label="Tenant" value={data.tenantId.slice(0, 8)} mono />
-        <InfoCard label="Idempotency Key" value={data.idempotencyKey} mono />
+        <InfoCard label="Tenant" value={data.tenantId ? data.tenantId.slice(0, 8) : '—'} mono />
+        <InfoCard label="Idempotency Key" value={data.idempotencyKey ?? '—'} mono />
         <InfoCard
           label="Próxima tentativa"
           value={data.nextAttemptAt ? new Date(data.nextAttemptAt).toLocaleString('pt-BR') : '—'}
